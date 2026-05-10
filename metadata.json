@@ -1,0 +1,6 @@
+{
+  "name": "Jam Jam",
+  "description": "Mobile-first rural transport booking for Nepal with Leaflet maps and OSRM routing.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["maps", "routing", "pwa"]
+}
