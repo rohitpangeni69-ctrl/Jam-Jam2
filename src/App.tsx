@@ -16,20 +16,36 @@ export default function App() {
   const [initializing, setInitializing] = useState(true);
 
   useEffect(() => {
+    if (localStorage.getItem('jamjam_demo_user')) {
+      setSession({
+        id: 'mock-user-123',
+        aud: 'authenticated',
+        role: 'authenticated',
+        email: localStorage.getItem('jamjam_demo_email') || 'demo@jamjam.com',
+        app_metadata: {},
+        user_metadata: { full_name: 'Demo Rider' },
+        created_at: new Date().toISOString(),
+      } as any);
+      setInitializing(false);
+      return;
+    }
+
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session?.user ?? null);
       setInitializing(false);
     });
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setSession(session?.user ?? null);
+      if (!localStorage.getItem('jamjam_demo_user')) {
+        setSession(session?.user ?? null);
+      }
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
-    if (session) {
+    if (session && !localStorage.getItem('jamjam_demo_user')) {
       // Auto-create/upsert profile row
       supabase.from('profiles').upsert({
         id: session.id,

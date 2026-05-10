@@ -9,6 +9,16 @@ export default function ProfilePage() {
 
   useEffect(() => {
     async function getProfile() {
+      if (localStorage.getItem('jamjam_demo_user')) {
+        setProfile({ 
+          full_name: 'Demo Rider', 
+          email: localStorage.getItem('jamjam_demo_email') || 'demo@jamjam.com',
+          phone: '+977 9800000000'
+        });
+        setLoading(false);
+        return;
+      }
+
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         const { data } = await supabase
@@ -24,7 +34,10 @@ export default function ProfilePage() {
   }, []);
 
   const handleLogout = async () => {
+    localStorage.removeItem('jamjam_demo_user');
+    localStorage.removeItem('jamjam_demo_email');
     await supabase.auth.signOut();
+    window.location.href = '/auth';
   };
 
   if (loading) return (

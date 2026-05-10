@@ -13,6 +13,16 @@ export default function AuthPage() {
     setLoading(true);
     setMessage(null);
 
+    // MOCK LOGIN FOR DEMO IF NO SUPABASE CONFIGURED
+    if (import.meta.env.VITE_SUPABASE_URL === undefined || import.meta.env.VITE_SUPABASE_URL === '' || import.meta.env.VITE_SUPABASE_URL === 'https://placeholder.supabase.co' || email === 'demo@jamjam.com') {
+      setTimeout(() => {
+        localStorage.setItem('jamjam_demo_user', 'true');
+        localStorage.setItem('jamjam_demo_email', email);
+        window.location.href = '/';
+      }, 1000);
+      return;
+    }
+
     const { error } = await supabase.auth.signInWithOtp({
       email,
       options: {

@@ -9,6 +9,21 @@ export default function HistoryPage() {
 
   useEffect(() => {
     async function fetchRides() {
+      if (localStorage.getItem('jamjam_demo_user')) {
+        setRides([
+          {
+            id: 'mock-1',
+            created_at: new Date().toISOString(),
+            fare: 150,
+            pickup_address: 'Boudhanath Stupa, Kathmandu',
+            destination_address: 'Thamel, Kathmandu',
+            vehicle_id: 'bike'
+          }
+        ]);
+        setLoading(false);
+        return;
+      }
+
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
         const { data } = await supabase

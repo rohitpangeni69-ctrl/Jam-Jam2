@@ -158,28 +158,30 @@ export default function BookPage({ ride, setPickup, setDestination, setVehicle, 
     setStatus('searching');
     
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
+      if (!localStorage.getItem('jamjam_demo_user')) {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) return;
 
-      const vehicle = vehicleTypes.find(v => v.id === ride.vehicleId);
-      const totalFare = Math.round((vehicle?.baseFare || 0) + ((ride.distance || 0) * (vehicle?.perKm || 0)));
+        const vehicle = vehicleTypes.find(v => v.id === ride.vehicleId);
+        const totalFare = Math.round((vehicle?.baseFare || 0) + ((ride.distance || 0) * (vehicle?.perKm || 0)));
 
-      const { error } = await supabase.from('rides').insert({
-        user_id: user.id,
-        pickup_address: ride.pickup.address,
-        pickup_lat: ride.pickup.lat,
-        pickup_lng: ride.pickup.lng,
-        destination_address: ride.destination.address,
-        destination_lat: ride.destination.lat,
-        destination_lng: ride.destination.lng,
-        vehicle_id: ride.vehicleId,
-        distance: ride.distance,
-        duration: ride.duration,
-        fare: totalFare,
-        status: 'completed'
-      });
+        const { error } = await supabase.from('rides').insert({
+          user_id: user.id,
+          pickup_address: ride.pickup.address,
+          pickup_lat: ride.pickup.lat,
+          pickup_lng: ride.pickup.lng,
+          destination_address: ride.destination.address,
+          destination_lat: ride.destination.lat,
+          destination_lng: ride.destination.lng,
+          vehicle_id: ride.vehicleId,
+          distance: ride.distance,
+          duration: ride.duration,
+          fare: totalFare,
+          status: 'completed'
+        });
 
-      if (error) throw error;
+        if (error) throw error;
+      }
       
       setStatus('assigned'); // Use this to show success briefly
 
