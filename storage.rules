@@ -1,0 +1,16 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Reusable function
+    function isAuth() { return request.auth != null; }
+    
+    // Drivers folder rule
+    match /drivers/{userId}/kyc/{fileName} {
+      allow read: if isAuth() && request.auth.uid == userId;
+      allow write: if isAuth() 
+                   && request.auth.uid == userId
+                   && request.resource.size < 5 * 1024 * 1024 // 5MB limit
+                   && request.resource.contentType.matches('image/.*'); // Only images
+    }
+  }
+}

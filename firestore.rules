@@ -1,0 +1,68 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Reusable Helpers
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(uid) { return isSignedIn() && request.auth.uid == uid; }
+    
+    // USERS COLLECTION
+    match /users/{uid} {
+      allow read: if isSignedIn(); // Allow reading drivers/riders
+      // Allow users to create/update their own profile
+      allow write: if isOwner(uid);
+    }
+    
+    // DRIVER KYC (Private)
+    match /driver_kyc/{uid} {
+      allow read, write: if isOwner(uid);
+    }
+
+    // ACTIVE RIDES (Lifecycle state machine)
+    match /active_rides/{rideId} {
+      // Driver can read nearby active rides to bid, Rider can read their own
+      allow read: if isSignedIn();
+      
+      // Rider can create a ride
+      allow create: if isSignedIn() 
+                    && request.resource.data.rider_id == request.auth.uid
+                    && request.resource.data.status == 'requested';
+      
+      // State transitions and driver assignments
+      allow update: if isSignedIn() && (
+        // Rider can update their ride (e.g. to accept a driver or cancel)
+        (resource.data.rider_id == request.auth.uid) || 
+        // Driver can update if they are the accepted driver (to update status to arriving/started)
+        (resource.data.driver_id == request.auth.uid)
+      );
+      
+      // Bids subcollection
+      match /bids/{driverId} {
+        // Riders can read bids on their ride. Drivers can read other bids to compete.
+        allow read: if isSignedIn();
+        
+        // Driver can create/update their own bid
+        allow write: if isOwner(driverId);
+      }
+    }
+    
+    // RIDE HISTORY
+    match /ride_history/{rideId} {
+      // Only involved parties can read history
+      allow read: if isSignedIn() && (
+        resource.data.rider_id == request.auth.uid || 
+        resource.data.driver_id == request.auth.uid
+      );
+      // No client edits allowed on history, created by cloud function or moved from active
+      allow write: if false; 
+    }
+    
+    // WALLETS
+    match /wallets/{uid} {
+      // Users can only read their own wallet
+      allow read: if isOwner(uid);
+      // Client cannot modify wallet balances directly! Cloud Functions only.
+      allow write: if false;
+    }
+  }
+}

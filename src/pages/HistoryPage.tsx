@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { supabase } from '@/lib/supabase';
+import { auth, db } from '@/lib/firebase';
+import { collection, query, where, getDocs, orderBy } from 'firebase/firestore';
 import { Clock, Navigation, Loader2 } from 'lucide-react';
 
 export default function HistoryPage() {
@@ -24,14 +25,16 @@ export default function HistoryPage() {
         return;
       }
 
-      const { data: { user } } = await supabase.auth.getUser();
+      const user = auth.currentUser;
       if (user) {
-        const { data } = await supabase
-          .from('rides')
-          .select('*')
-          .eq('user_id', user.id)
-          .order('created_at', { ascending: false });
-        if (data) setRides(data);
+        try {
+          const q = query(collection(db, 'ride_history'), where('rider_id', '==', user.uid), orderBy('created_at', 'desc'));
+          const querySnapshot = await getDocs(q);
+          const data = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+          setRides(data);
+        } catch (error) {
+          console.error("Error fetching rides:", error);
+        }
       }
       setLoading(false);
     }

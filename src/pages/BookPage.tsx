@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { MapContainer, TileLayer, Marker, Polyline, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Polyline, useMap, useMapEvents } from 'react-leaflet';
 import L from 'leaflet';
-import { Search, MapPin, Navigation, Send, Loader2, Bookmark, LocateFixed, X, CheckCircle2 } from 'lucide-react';
+import { Search, MapPin, Navigation, Send, Loader2, Bookmark, LocateFixed, X, CheckCircle2, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { RideState, Location } from '@/hooks/useRider';
 import { VehicleSelector } from '@/components/VehicleSelector';
@@ -9,7 +9,8 @@ import { FareCard } from '@/components/FareCard';
 import { searchAddress, getRoute } from '@/lib/maps';
 import { cn } from '@/lib/utils';
 import { savedPlaces, vehicleTypes } from '@/data/transportData';
-import { supabase } from '@/lib/supabase';
+import { auth, db } from '@/lib/firebase';
+import { collection, addDoc } from 'firebase/firestore';
 
 // Fix for default marker icons in React Leaflet
 // @ts-ignore
@@ -31,7 +32,7 @@ interface Props {
 }
 
 // Helper component to center map on markers
-function MapUpdater({ pickup, destination, lastUpdate }: { pickup: Location | null, destination: Location | null, lastUpdate: number }) {
+function MapUpdater({ pickup, destination, lastUpdate, onCentered }: { pickup: Location | null, destination: Location | null, lastUpdate: number, onCentered: () => void }) {
   const map = useMap();
   
   useEffect(() => {
@@ -41,8 +42,17 @@ function MapUpdater({ pickup, destination, lastUpdate }: { pickup: Location | nu
     } else if (pickup) {
       map.setView([pickup.lat, pickup.lng], 15);
     }
+    onCentered();
   }, [pickup, destination, map, lastUpdate]);
 
+  return null;
+}
+
+function MapEventTracker({ onMove }: { onMove: () => void }) {
+  useMapEvents({
+    dragend: onMove,
+    zoomend: onMove,
+  });
   return null;
 }
 
@@ -54,7 +64,12 @@ export default function BookPage({ ride, setPickup, setDestination, setVehicle, 
   const [isRouting, setIsRouting] = useState(false);
   const [routeCoords, setRouteCoords] = useState<[number, number][]>([]);
   const [mapUpdateKey, setMapUpdateKey] = useState(0);
+  const [isMapPanned, setIsMapPanned] = useState(false);
   const searchTimeout = useRef<any>(null);
+
+  const handleRecenter = () => {
+    setMapUpdateKey(prev => prev + 1);
+  };
 
   // Handle address search with debounce
   useEffect(() => {
@@ -159,42 +174,51 @@ export default function BookPage({ ride, setPickup, setDestination, setVehicle, 
     
     try {
       if (!localStorage.getItem('jamjam_demo_user')) {
-        const { data: { user } } = await supabase.auth.getUser();
+        const user = auth.currentUser;
         if (!user) return;
 
         const vehicle = vehicleTypes.find(v => v.id === ride.vehicleId);
         const totalFare = Math.round((vehicle?.baseFare || 0) + ((ride.distance || 0) * (vehicle?.perKm || 0)));
 
-        const { error } = await supabase.from('rides').insert({
-          user_id: user.id,
-          pickup_address: ride.pickup.address,
-          pickup_lat: ride.pickup.lat,
-          pickup_lng: ride.pickup.lng,
-          destination_address: ride.destination.address,
-          destination_lat: ride.destination.lat,
-          destination_lng: ride.destination.lng,
-          vehicle_id: ride.vehicleId,
-          distance: ride.distance,
-          duration: ride.duration,
-          fare: totalFare,
-          status: 'completed'
-        });
+        const { getGeohash } = await import('@/lib/geo');
+        const hash = getGeohash(ride.pickup.lat, ride.pickup.lng);
 
-        if (error) throw error;
+        const rideRef = collection(db, 'active_rides');
+        await addDoc(rideRef, {
+          rider_id: user.uid,
+          driver_id: null,
+          pickup: {
+            address: ride.pickup.address,
+            lat: ride.pickup.lat,
+            lng: ride.pickup.lng,
+            geohash: hash,
+          },
+          dropoff: {
+            address: ride.destination.address,
+            lat: ride.destination.lat,
+            lng: ride.destination.lng,
+          },
+          vehicle_id: ride.vehicleId,
+          distance_km: ride.distance,
+          estimated_fare: totalFare,
+          status: 'requested',
+          created_at: new Date().toISOString()
+        });
       }
       
-      setStatus('assigned'); // Use this to show success briefly
-
-      // Reset flow after showing success
+      // Keep searching until a driver bids (we'll mock success after 5 seconds for now)
       setTimeout(() => {
-        setStatus('idle');
-        resetRide();
-      }, 3000);
+        setStatus('assigned');
+        setTimeout(() => {
+          setStatus('idle');
+          resetRide();
+        }, 5000);
+      }, 5000);
       
     } catch (error) {
       console.error("Ride insertion error:", error);
       setStatus('idle');
-      alert("Failed to save ride. Please check connection.");
+      alert("Failed to request ride. Please try again.");
     }
   };
 
@@ -218,17 +242,23 @@ export default function BookPage({ ride, setPickup, setDestination, setVehicle, 
           {ride.pickup && <Marker position={[ride.pickup.lat, ride.pickup.lng]} />}
           {ride.destination && <Marker position={[ride.destination.lat, ride.destination.lng]} />}
           {routeCoords.length > 0 && <Polyline positions={routeCoords} color="#176b4d" weight={5} opacity={0.7} />}
-          <MapUpdater pickup={ride.pickup} destination={ride.destination} lastUpdate={mapUpdateKey} />
+          <MapUpdater pickup={ride.pickup} destination={ride.destination} lastUpdate={mapUpdateKey} onCentered={() => setIsMapPanned(false)} />
+          <MapEventTracker onMove={() => setIsMapPanned(true)} />
         </MapContainer>
 
-        {(ride.pickup || ride.destination) && (
-          <button 
-            onClick={() => setMapUpdateKey(prev => prev + 1)}
-            className="absolute right-4 bottom-1/2 translate-y-24 z-10 w-12 h-12 bg-white rounded-2xl shadow-xl border border-slate-200 flex items-center justify-center text-slate-600 hover:text-primary transition-all active:scale-95"
-          >
-            <LocateFixed size={20} />
-          </button>
-        )}
+        <AnimatePresence>
+          {(ride.pickup || ride.destination) && isMapPanned && (
+            <motion.button 
+              initial={{ scale: 0.8, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.8, opacity: 0 }}
+              onClick={handleRecenter}
+              className="absolute right-4 bottom-1/2 translate-y-24 z-10 w-12 h-12 bg-white rounded-2xl shadow-xl border border-slate-200 flex items-center justify-center text-slate-600 hover:text-primary transition-all active:scale-95"
+            >
+              <LocateFixed size={20} />
+            </motion.button>
+          )}
+        </AnimatePresence>
         
         {isRouting && (
           <div className="absolute inset-x-0 bottom-1/2 flex justify-center pointer-events-none">
@@ -242,34 +272,34 @@ export default function BookPage({ ride, setPickup, setDestination, setVehicle, 
 
       {/* Top HUD */}
       <div className="relative z-10 p-4">
-        <div className="bg-white/95 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200 p-4 space-y-3">
-          <div className="flex items-center gap-3">
-            <div className="flex flex-col items-center gap-1">
-              <div className="w-2.5 h-2.5 rounded-full bg-blue-500 shadow-sm" />
-              <div className="w-0.5 h-8 bg-slate-100" />
-              <div className="w-2.5 h-2.5 rounded-full bg-primary shadow-sm" />
+        <div className="bg-[#1E293B]/90 backdrop-blur-xl rounded-3xl shadow-[0_20px_40px_rgba(0,0,0,0.5)] border border-slate-700/50 p-4 space-y-3">
+          <div className="flex items-center gap-4">
+            <div className="flex flex-col items-center gap-1.5 ml-2">
+              <div className="w-3 h-3 rounded-full bg-[#14B8A6] shadow-[0_0_10px_rgba(20,184,166,0.6)]" />
+              <div className="w-0.5 h-10 bg-slate-700" />
+              <div className="w-3 h-3 rounded-full bg-[#22C55E] shadow-[0_0_10px_rgba(34,197,94,0.6)]" />
             </div>
             
-            <div className="flex-1 space-y-2">
+            <div className="flex-1 space-y-3">
               <div className={cn("w-full relative group")}>
                 <button 
                   onClick={() => setActiveInput('pickup')}
                   className={cn(
-                    "w-full text-left px-4 py-2.5 rounded-xl text-sm transition-all border-2",
-                    activeInput === 'pickup' ? "bg-slate-50 border-primary" : "bg-slate-50 border-transparent shadow-inner-sm"
+                    "w-full text-left px-5 py-3.5 rounded-2xl text-base transition-all border outline-none",
+                    activeInput === 'pickup' ? "bg-slate-800 border-[#14B8A6] shadow-[0_0_15px_rgba(20,184,166,0.1)]" : "bg-slate-800 border-transparent hover:border-slate-600"
                   )}
                 >
                   <div className="flex justify-between items-center pr-6">
-                    <span className={cn("block truncate max-w-[200px]", !ride.pickup ? "text-slate-400" : "text-slate-700 font-bold")}>
-                      {ride.pickup?.address || "Pickup Point"}
+                    <span className={cn("block truncate max-w-[200px] font-medium", !ride.pickup ? "text-slate-400" : "text-[#F8FAFC]")}>
+                      {ride.pickup?.address || "Current Location"}
                     </span>
-                    {!ride.pickup && <MapPin size={14} className="text-slate-300" />}
+                    {!ride.pickup && <MapPin size={18} className="text-[#14B8A6]" />}
                   </div>
                 </button>
                 {ride.pickup && (
                   <button 
                     onClick={(e) => { e.stopPropagation(); setPickup(null); }}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-300 hover:text-red-400 transition-colors"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-slate-400 hover:text-red-400 transition-colors bg-slate-700/50 rounded-full"
                   >
                     <X size={14} />
                   </button>
@@ -280,21 +310,21 @@ export default function BookPage({ ride, setPickup, setDestination, setVehicle, 
                 <button 
                   onClick={() => setActiveInput('destination')}
                   className={cn(
-                    "w-full text-left px-4 py-2.5 rounded-xl text-sm transition-all border-2",
-                    activeInput === 'destination' ? "bg-slate-50 border-primary" : "bg-slate-50 border-transparent shadow-inner-sm"
+                    "w-full text-left px-5 py-3.5 rounded-2xl text-base transition-all border outline-none",
+                    activeInput === 'destination' ? "bg-slate-800 border-[#22C55E] shadow-[0_0_15px_rgba(34,197,94,0.1)]" : "bg-slate-800 border-transparent hover:border-slate-600"
                   )}
                 >
                   <div className="flex justify-between items-center pr-6">
-                    <span className={cn("block truncate max-w-[200px]", !ride.destination ? "text-slate-400" : "text-slate-700 font-bold")}>
+                    <span className={cn("block truncate max-w-[200px] font-medium text-lg", !ride.destination ? "text-[#F8FAFC]" : "text-[#22C55E]")}>
                       {ride.destination?.address || "Where to?"}
                     </span>
-                    {!ride.destination && <Navigation size={14} className="text-slate-300" />}
+                    {!ride.destination && <Search size={20} className="text-[#22C55E]" />}
                   </div>
                 </button>
                 {ride.destination && (
                   <button 
                     onClick={(e) => { e.stopPropagation(); setDestination(null); }}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1.5 text-slate-300 hover:text-red-400 transition-colors"
+                    className="absolute right-3 top-1/2 -translate-y-1/2 p-2 text-slate-400 hover:text-red-400 transition-colors bg-slate-700/50 rounded-full"
                   >
                     <X size={14} />
                   </button>
@@ -311,53 +341,54 @@ export default function BookPage({ ride, setPickup, setDestination, setVehicle, 
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 10 }}
-              className="absolute inset-x-4 top-4 z-40 bg-white rounded-2xl shadow-2xl overflow-hidden border border-slate-200"
+              className="absolute inset-x-4 top-4 z-40 bg-[#1E293B] rounded-3xl shadow-[0_20px_40px_rgba(0,0,0,0.5)] overflow-hidden border border-slate-700/50"
             >
-              <div className="p-4 border-b border-slate-100 flex items-center gap-3 bg-slate-50">
-                <Search size={18} className="text-slate-400" />
+              <div className="p-5 border-b border-slate-700/50 flex items-center gap-4 bg-[#1E293B]">
+                <Search size={22} className="text-[#14B8A6]" />
                 <input
                   autoFocus
-                  placeholder={activeInput === 'pickup' ? "Search pickup location..." : "Search destination..."}
-                  className="flex-1 bg-transparent outline-none text-sm font-bold text-slate-700 placeholder:text-slate-300"
+                  placeholder={activeInput === 'pickup' ? "Search pickup location..." : "Where to?"}
+                  className="flex-1 bg-transparent outline-none text-lg font-semibold text-[#F8FAFC] placeholder:text-slate-500"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
                 />
                 <button 
                   onClick={() => { setActiveInput(null); setSearchQuery(''); }}
-                  className="px-2 py-1 text-xs font-black text-primary uppercase tracking-widest"
+                  className="w-8 h-8 flex items-center justify-center rounded-full bg-slate-700/50 hover:bg-slate-700 text-slate-300 transition-colors"
                 >
-                  Cancel
+                  <X size={16} />
                 </button>
               </div>
 
-              <div className="max-h-[60vh] overflow-y-auto bg-white">
+              <div className="max-h-[60vh] overflow-y-auto bg-[#0F172A] no-scrollbar">
                 {searchQuery.length < 3 && suggestions.length === 0 && (
                   <div className="p-2">
                     <button
                       onClick={useCurrentLocation}
-                      className="w-full flex items-center gap-4 p-4 hover:bg-slate-50 rounded-xl transition-colors text-primary font-bold text-sm"
+                      className="w-full flex items-center gap-4 p-4 hover:bg-slate-800 rounded-2xl transition-colors text-[#22C55E] font-semibold text-base"
                     >
-                      <div className="w-8 h-8 rounded-full bg-primary/10 flex items-center justify-center">
-                        <LocateFixed size={16} />
+                      <div className="w-10 h-10 rounded-full bg-[#22C55E]/10 flex items-center justify-center">
+                        <LocateFixed size={20} />
                       </div>
                       Use Current Location
                     </button>
                     
-                    <div className="px-4 py-2 mt-2">
-                       <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Saved Places</label>
+                    <div className="px-4 py-3 mt-2 flex items-center gap-2">
+                       <Bookmark size={14} className="text-slate-500" />
+                       <label className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Saved Places</label>
                     </div>
                     {savedPlaces.map((place) => (
                       <button
                         key={place.id}
                         onClick={() => selectSavedPlace(place)}
-                        className="w-full flex items-center gap-4 p-4 hover:bg-slate-50 rounded-xl transition-colors text-left"
+                        className="w-full flex items-center gap-4 p-4 hover:bg-slate-800 rounded-2xl transition-colors text-left"
                       >
-                        <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
-                          <Bookmark size={16} />
+                        <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center text-slate-400">
+                          <Bookmark size={18} />
                         </div>
                         <div>
-                          <p className="font-bold text-slate-800 text-sm">{place.name}</p>
-                          <p className="text-[10px] text-slate-400 font-medium truncate max-w-[200px]">{place.address}</p>
+                          <p className="font-semibold text-[#F8FAFC] text-base">{place.name}</p>
+                          <p className="text-sm text-slate-400 font-medium truncate max-w-[200px]">{place.address}</p>
                         </div>
                       </button>
                     ))}
@@ -365,16 +396,19 @@ export default function BookPage({ ride, setPickup, setDestination, setVehicle, 
                 )}
 
                 {isSearching && (
-                  <div className="p-12 flex flex-col items-center gap-3">
-                    <Loader2 className="animate-spin text-primary opacity-50" size={24} />
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Searching in Nepal...</p>
+                  <div className="p-12 flex flex-col items-center gap-4 text-center">
+                    <Loader2 className="animate-spin text-[#14B8A6]" size={32} />
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Searching in Nepal...</p>
                   </div>
                 )}
 
                 {searchQuery.length >= 3 && suggestions.length === 0 && !isSearching && (
-                  <div className="p-12 text-center">
-                    <p className="text-sm font-bold text-slate-400">No places found in Nepal</p>
-                    <p className="text-[10px] text-slate-300 font-medium uppercase tracking-widest mt-1 text-center">Try a different address or landmark</p>
+                  <div className="p-12 text-center flex flex-col items-center">
+                     <div className="w-16 h-16 bg-slate-800 rounded-full flex items-center justify-center mb-4">
+                        <MapPin size={24} className="text-slate-500" />
+                     </div>
+                    <p className="text-base font-bold text-[#F8FAFC]">No places found</p>
+                    <p className="text-sm text-slate-400 mt-1">Try a different address or landmark.</p>
                   </div>
                 )}
 
@@ -382,16 +416,16 @@ export default function BookPage({ ride, setPickup, setDestination, setVehicle, 
                   <button
                     key={index}
                     onClick={() => selectLocation(item)}
-                    className="w-full text-left p-4 hover:bg-slate-50 border-b border-slate-50 last:border-0 flex items-start gap-4 transition-colors"
+                    className="w-full text-left p-4 hover:bg-slate-800 border-b border-slate-800/50 last:border-0 flex items-center gap-4 transition-colors"
                   >
-                    <div className="w-8 h-8 rounded-full bg-slate-100 flex items-center justify-center shrink-0 mt-0.5">
-                      <MapPin size={14} className="text-slate-400" />
+                    <div className="w-10 h-10 rounded-full bg-slate-800 flex items-center justify-center shrink-0">
+                      <MapPin size={18} className="text-[#14B8A6]" />
                     </div>
                     <div>
-                      <p className="font-bold text-slate-800 text-sm leading-tight mb-0.5">
+                      <p className="font-semibold text-[#F8FAFC] text-base leading-tight mb-1">
                         {item.display_name.split(',')[0]}
                       </p>
-                      <p className="text-[10px] text-slate-400 font-medium uppercase tracking-tighter">
+                      <p className="text-xs text-slate-400 font-medium">
                         {item.display_name.split(',').slice(1, 3).join(',')}
                       </p>
                     </div>
@@ -420,10 +454,13 @@ export default function BookPage({ ride, setPickup, setDestination, setVehicle, 
                 duration={ride.duration} 
               />
               
-              <div className="bg-white/95 backdrop-blur-md rounded-2xl p-5 shadow-2xl border border-slate-200">
-                <div className="flex justify-between items-center mb-4 px-1">
-                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">Select Ride</label>
-                  <span className="text-[9px] text-slate-400 font-bold uppercase py-0.5 px-2 bg-slate-50 rounded-full border border-slate-100">Rural Ready</span>
+              <div className="bg-[#1E293B]/95 backdrop-blur-xl rounded-t-3xl p-6 pt-8 shadow-[0_-10px_40px_rgba(0,0,0,0.5)] border-t border-slate-700/50 relative">
+                <div className="absolute top-3 left-1/2 -translate-x-1/2 w-12 h-1.5 bg-slate-700 rounded-full"></div>
+                <div className="flex justify-between items-center mb-5 px-1">
+                  <label className="text-sm font-semibold text-slate-400 tracking-wide">Select Vehicle</label>
+                  <span className="text-xs text-[#22C55E] font-medium uppercase py-1 px-3 bg-[#22C55E]/10 rounded-full border border-[#22C55E]/20 flex items-center gap-1.5">
+                    <Zap size={12} className="fill-[#22C55E]" /> Best Match
+                  </span>
                 </div>
                 <VehicleSelector 
                   selectedId={ride.vehicleId} 
@@ -432,9 +469,9 @@ export default function BookPage({ ride, setPickup, setDestination, setVehicle, 
                 
                 <button
                   onClick={confirmRide}
-                  className="w-full bg-primary hover:bg-primary/95 text-white py-4 mt-4 rounded-xl font-bold shadow-lg shadow-primary/20 flex items-center justify-center gap-3 active:scale-[0.98] transition-all uppercase tracking-widest text-sm"
+                  className="w-full bg-[#22C55E] hover:bg-[#16a34a] text-slate-900 py-5 mt-6 rounded-2xl font-bold text-lg shadow-[0_10px_30px_rgba(34,197,94,0.2)] flex items-center justify-center gap-3 active:scale-[0.98] transition-all"
                 >
-                  CONFIRM BOOKING <Send size={18} />
+                  Confirm Ride <Send size={20} />
                 </button>
               </div>
             </motion.div>
